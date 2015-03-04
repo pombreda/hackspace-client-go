@@ -46,6 +46,13 @@ func GetFileNameWithoutExtension(path string) string {
 	return strings.TrimSuffix(fname, filepath.Ext(fname))
 }
 
+func GetFileSize(path string) (int64, error) {
+	if stat, err := os.Stat(path); err != nil {
+		return 0, err
+	} else {
+		return stat.Size(), nil
+	}
+}
 func IsWindows() bool {
 	return runtime.GOOS == "windows"
 }

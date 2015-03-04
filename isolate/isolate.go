@@ -12,6 +12,7 @@ import (
 	"sync"
 
 	"chromium.googlesource.com/infra/swarming/client-go/internal/common"
+	"chromium.googlesource.com/infra/swarming/client-go/isolateserver"
 )
 
 const ISOLATED_GEN_JSON_VERSION = 1
@@ -61,14 +62,40 @@ func (m *FileMetadata) GetDigest() string {
 	return m.meta["h"]
 }
 
-func (m *FileMetadata) GetSize() int64 {
-	v, _ := strconv.ParseInt(m.meta["s"], 10, 64)
-	return v
+func (m *FileMetadata) GetSize() (int64, error) {
+	return strconv.ParseInt(m.meta["s"], 10, 64)
 }
 
 type FileAsset struct {
 	*FileMetadata
 	fullPath string
+}
+
+func (f *FileAsset) GetSize() int64 {
+	if size, err := f.FileMetadata.GetSize(); err != nil {
+		size, err = common.GetFileSize(f.fullPath)
+		if err != nil {
+			// TODO(tandrii): handle this error
+			panic(err)
+		}
+		return size
+	} else {
+		return size
+	}
+}
+
+func (fa *FileAsset) ToUploadItem() isolateserver.UploadItem {
+	// TODO(tandrii): get_zip_compression_level.
+	f := isolateserver.FileItem{
+		isolateserver.Item{
+			Digest:           fa.meta["h"],
+			Size:             fa.GetSize(),
+			HighPriority:     fa.IsHighPriority(),
+			CompressionLevel: 6,
+		},
+		fa.fullPath,
+	}
+	return &f
 }
 
 func isolateTree(done <-chan struct{}, tree Tree, chFileAssets chan<- FileAsset) ([]string, error) {
@@ -120,9 +147,9 @@ func Isolate(done <-chan struct{}, trees <-chan Tree) (<-chan map[string]string,
 	return chIsolateHashes, chFileAssets, chError
 }
 
-//prepareItemsForUpload filters out duplicated FileAsset and converts them to FileToUpload.
-func prepareItemsForUpload(done <-chan struct{}, chIn <-chan FileAsset) <-chan FileToUpload {
-	chOut := make(chan FileToUpload)
+//prepareItemsForUpload filters out duplicated FileAsset and converts them to isolateserver.FileItem.
+func prepareItemsForUpload(done <-chan struct{}, chIn <-chan FileAsset) <-chan isolateserver.UploadItem {
+	chOut := make(chan isolateserver.UploadItem)
 	go func() {
 		defer close(chOut)
 		seen := map[string]bool{}
@@ -131,7 +158,7 @@ func prepareItemsForUpload(done <-chan struct{}, chIn <-chan FileAsset) <-chan F
 			if !fa.IsSymlink() && !seen[fa.fullPath] {
 				seen[fa.fullPath] = true
 				select {
-				case chOut <- fa.ToUpload():
+				case chOut <- fa.ToUploadItem():
 				case <-done:
 					return
 				}
@@ -148,7 +175,7 @@ func Archive(done <-chan struct{}, chFileAssets <-chan FileAsset, namespace stri
 	chError := make(chan error, 1)
 	go func() {
 		defer close(chError)
-		s := Storage{GetStorageApi(server, namespace)}
+		s := isolateserver.NewStorage(server, namespace)
 		if err := s.Connect(); err != nil {
 			chError <- err
 			return
