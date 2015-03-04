@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 
@@ -38,6 +39,11 @@ func URLToHTTPS(s string) (string, error) {
 func IsDirectory(path string) bool {
 	fileInfo, err := os.Stat(path)
 	return err == nil && fileInfo.IsDir()
+}
+
+func GetFileNameWithoutExtension(path string) string {
+	fname := filepath.Base(path)
+	return strings.TrimSuffix(fname, filepath.Ext(fname))
 }
 
 func IsWindows() bool {
@@ -87,4 +93,13 @@ func (c *NKVArgCollect) Set(value string) error {
 	// TODO(tandrii): decode value as utf-8.
 	(*c.Values)[key] = value
 	return nil
+}
+
+// SendError to error channel unless done channel is closed.
+// Use this for timeley termination of gourotines.
+func SendError(done <-chan struct{}, err error, chError chan<- error) {
+	select {
+	case chError <- err:
+	case <-done:
+	}
 }

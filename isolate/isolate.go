@@ -5,7 +5,14 @@
 // Package isolate implements the code to process '.isolate' files.
 package isolate
 
-import "regexp"
+import (
+	"log"
+	"regexp"
+	"strconv"
+	"sync"
+
+	"chromium.googlesource.com/infra/swarming/client-go/internal/common"
+)
 
 const ISOLATED_GEN_JSON_VERSION = 1
 const VALID_VARIABLE = "[A-Za-z_][A-Za-z_0-9]*"
@@ -40,7 +47,114 @@ func (a *ArchiveOptions) Init() {
 	a.ConfigVariables = map[string]string{}
 }
 
-func IsolateAndArchive(trees []Tree, namespace string, server string) (
-	map[string]string, error) {
-	return nil, nil
+type FileMetadata struct {
+	meta map[string]string
+}
+
+func (m *FileMetadata) IsSymlink() bool {
+	return m.meta["l"] != ""
+}
+func (m *FileMetadata) IsHighPriority() bool {
+	return m.meta["priority"] == "0"
+}
+func (m *FileMetadata) GetDigest() string {
+	return m.meta["h"]
+}
+
+func (m *FileMetadata) GetSize() int64 {
+	v, _ := strconv.ParseInt(m.meta["s"], 10, 64)
+	return v
+}
+
+type FileAsset struct {
+	*FileMetadata
+	fullPath string
+}
+
+func isolateTree(done <-chan struct{}, tree Tree, chFileAssets chan<- FileAsset) ([]string, error) {
+	//return nil, fmt.Errorf("TODO(tandrii)")
+	return []string{"test"}, nil
+}
+
+func Isolate(done <-chan struct{}, trees <-chan Tree) (<-chan map[string]string, <-chan FileAsset, <-chan error) {
+	type result struct {
+		target string
+		hash   string
+		err    error
+	}
+	chResults := make(chan result)
+	chFileAssets := make(chan FileAsset)
+	go func() {
+		var wg sync.WaitGroup
+		for tree := range trees {
+			wg.Add(1)
+			go func() {
+				targetName := common.GetFileNameWithoutExtension(tree.Opts.Isolated)
+				treeIsolatedHashes, err := isolateTree(done, tree, chFileAssets)
+				chResults <- result{targetName, treeIsolatedHashes[0], err}
+				wg.Done()
+			}()
+		}
+		wg.Wait()
+		close(chFileAssets)
+		close(chResults)
+	}()
+	// Buffer these two channels, as we don't want blocking send, and they'll have at most 1 item.
+	chIsolateHashes := make(chan map[string]string, 1)
+	chError := make(chan error, 1)
+	go func() {
+		defer close(chError)
+		defer close(chIsolateHashes)
+		isolateHashes := map[string]string{}
+		for r := range chResults {
+			if r.err != nil {
+				// TODO(tandrii): this used to be ignored in Py-swarming.
+				chError <- r.err
+				return
+			}
+			isolateHashes[r.target] = r.hash
+		}
+		chIsolateHashes <- isolateHashes
+		chError <- nil // Indicate success.
+	}()
+	return chIsolateHashes, chFileAssets, chError
+}
+
+//prepareItemsForUpload filters out duplicated FileAsset and converts them to FileToUpload.
+func prepareItemsForUpload(done <-chan struct{}, chIn <-chan FileAsset) <-chan FileToUpload {
+	chOut := make(chan FileToUpload)
+	go func() {
+		defer close(chOut)
+		seen := map[string]bool{}
+		skipped := 0
+		for fa := range chIn {
+			if !fa.IsSymlink() && !seen[fa.fullPath] {
+				seen[fa.fullPath] = true
+				select {
+				case chOut <- fa.ToUpload():
+				case <-done:
+					return
+				}
+			} else {
+				skipped++
+			}
+		}
+		log.Printf("Skipped %d duplicated entries", skipped)
+	}()
+	return chOut
+}
+
+func Archive(done <-chan struct{}, chFileAssets <-chan FileAsset, namespace string, server string) <-chan error {
+	chError := make(chan error, 1)
+	go func() {
+		defer close(chError)
+		s := Storage{GetStorageApi(server, namespace)}
+		if err := s.Connect(); err != nil {
+			chError <- err
+			return
+		}
+		chFilesToUpload := prepareItemsForUpload(done, chFileAssets)
+		chError <- s.Upload(done, chFilesToUpload)
+	}()
+	return chError
 }

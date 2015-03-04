@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 
 	"chromium.googlesource.com/infra/swarming/client-go/internal/common"
 	"chromium.googlesource.com/infra/swarming/client-go/isolate"
@@ -110,38 +111,99 @@ func convertPyToGoArchiveCMDArgs(args []string) []string {
 	return newArgs
 }
 
+type parseGenFileResult struct {
+	dir  string
+	opts *isolate.ArchiveOptions
+	err  error
+}
+
+func parseGenFile(genJsonPath string) parseGenFileResult {
+	data := &struct {
+		Args    []string
+		Dir     string
+		Version int
+	}{}
+	result := parseGenFileResult{}
+	result.err = common.ReadJSONFile(genJsonPath, data)
+	if result.err != nil {
+		return result
+	}
+	if data.Version != isolate.ISOLATED_GEN_JSON_VERSION {
+		result.err = fmt.Errorf("Invalid version %d in %s", data.Version, genJsonPath)
+	} else if !common.IsDirectory(data.Dir) {
+		result.err = fmt.Errorf("Invalid dir %s in %s", data.Dir, genJsonPath)
+	} else {
+		result.opts, result.err = parseArchiveCMD(data.Args, data.Dir)
+		result.dir = data.Dir
+	}
+	return result
+}
+
+func parseGenFiles(done <-chan struct{}, genJsonPaths []string) (<-chan isolate.Tree, <-chan error) {
+	trees := make(chan isolate.Tree)
+	errors := make(chan error, len(genJsonPaths))
+	var wg sync.WaitGroup
+	for _, genJsonPath := range genJsonPaths {
+		wg.Add(1)
+		go func() {
+			result := parseGenFile(genJsonPath)
+			if result.err != nil {
+				errors <- result.err
+			} else {
+				select {
+				case trees <- isolate.Tree{result.dir, *result.opts}:
+				case <-done:
+				}
+			}
+			wg.Done()
+		}()
+		select {
+		case <-done:
+			break // early termination
+		default:
+		}
+	}
+	outErrors := make(chan error, 1)
+	go func() {
+		wg.Wait()
+		close(trees)
+		select {
+		case err := <-errors:
+			outErrors <- err
+		default:
+			outErrors <- nil
+		}
+	}()
+	return trees, outErrors
+}
+
 func (c *batchArchiveRun) main(a subcommands.Application, args []string) error {
-	trees := []isolate.Tree{}
-	for _, genJsonPath := range args {
-		data := &struct {
-			Args    []string
-			Dir     string
-			Version int
-		}{}
-		if err := common.ReadJSONFile(genJsonPath, data); err != nil {
-			return err
+	done := make(chan struct{})
+	defer close(done)
+	chTrees, chGenError := parseGenFiles(done, args)
+	chIsolateHashes, chFileAssets, chIsoError := isolate.Isolate(done, chTrees)
+	chUploadError := isolate.Archive(done, chFileAssets, c.serverURL, c.namespace)
+	select {
+	case cerr := <-chGenError:
+		if cerr != nil {
+			return cerr
 		}
-		if data.Version != isolate.ISOLATED_GEN_JSON_VERSION {
-			return fmt.Errorf("Invalid version %d in %s", data.Version, genJsonPath)
+	case ierr := <-chIsoError:
+		if ierr != nil {
+			return ierr
 		}
-		if !common.IsDirectory(data.Dir) {
-			return fmt.Errorf("Invalid dir %s in %s", data.Dir, genJsonPath)
-		}
-		if opts, err := parseArchiveCMD(data.Args, data.Dir); err != nil {
-			return err
+	case uerr := <-chUploadError:
+		if uerr != nil {
+			return uerr
 		} else {
-			trees = append(trees, isolate.Tree{data.Dir, *opts})
+			// Success, no uploading error.
 		}
 	}
-	isolatedHashes, err := isolate.IsolateAndArchive(trees, c.serverURL, c.namespace)
-	if err != nil && c.dumpJson != "" {
-		if isolatedHashes != nil {
-			return common.WriteJSONFile(c.dumpJson, isolatedHashes)
-		} else {
-			return common.WriteJSONFile(c.dumpJson, make(map[string]string))
-		}
+	isolatedHashes := <-chIsolateHashes
+	if c.dumpJson != "" {
+		return common.WriteJSONFile(c.dumpJson, isolatedHashes)
 	}
-	return err
+	return nil
 }
 
 func (c *batchArchiveRun) Run(a subcommands.Application, args []string) int {
