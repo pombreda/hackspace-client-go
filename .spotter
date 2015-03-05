@@ -1,0 +1,7 @@
+watch-final: *_test.go -> make test
+watch-final: */*_test.go -> make test
+watch-final: */*/*_test.go -> make test
+
+watch: *.go -> make
+watch: */*.go -> make
+watch: */*/*.go -> make
