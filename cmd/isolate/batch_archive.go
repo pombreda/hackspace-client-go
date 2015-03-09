@@ -114,32 +114,31 @@ func convertPyToGoArchiveCMDArgs(args []string) []string {
 type parseGenFileResult struct {
 	dir  string
 	opts *isolate.ArchiveOptions
-	err  error
 }
 
-func parseGenFile(genJsonPath string) parseGenFileResult {
+func parseGenFile(genJsonPath string) (parseGenFileResult, error) {
 	data := &struct {
 		Args    []string
 		Dir     string
 		Version int
 	}{}
 	result := parseGenFileResult{}
-	result.err = common.ReadJSONFile(genJsonPath, data)
-	if result.err != nil {
-		return result
+	err := common.ReadJSONFile(genJsonPath, data)
+	if err != nil {
+		return result, err
 	}
 	if data.Version != isolate.ISOLATED_GEN_JSON_VERSION {
-		result.err = fmt.Errorf("Invalid version %d in %s", data.Version, genJsonPath)
+		return result, fmt.Errorf("Invalid version %d in %s", data.Version, genJsonPath)
 	} else if !common.IsDirectory(data.Dir) {
-		result.err = fmt.Errorf("Invalid dir %s in %s", data.Dir, genJsonPath)
+		return result, fmt.Errorf("Invalid dir %s in %s", data.Dir, genJsonPath)
 	} else {
-		result.opts, result.err = parseArchiveCMD(data.Args, data.Dir)
+		result.opts, err = parseArchiveCMD(data.Args, data.Dir)
 		result.dir = data.Dir
 	}
-	return result
+	return result, err
 }
 
-func parseGenFiles(done <-chan struct{}, genJsonPaths []string) (<-chan isolate.Tree, <-chan error) {
+func parseGenFiles(done <-chan bool, genJsonPaths []string) (<-chan isolate.Tree, <-chan error) {
 	trees := make(chan isolate.Tree)
 	errors := make(chan error, len(genJsonPaths))
 	var wg sync.WaitGroup
