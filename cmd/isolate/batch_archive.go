@@ -8,10 +8,12 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"sync"
+
+	"infra/libs/parallel"
 
 	"chromium.googlesource.com/infra/swarming/client-go/internal/common"
 	"chromium.googlesource.com/infra/swarming/client-go/isolate"
+	"github.com/maruel/interrupt"
 	"github.com/maruel/subcommands"
 )
 
@@ -117,13 +119,13 @@ type parseGenFileResult struct {
 }
 
 func parseGenFile(genJsonPath string) (parseGenFileResult, error) {
-	data := &struct {
+	data := struct {
 		Args    []string
 		Dir     string
 		Version int
 	}{}
 	result := parseGenFileResult{}
-	err := common.ReadJSONFile(genJsonPath, data)
+	err := common.ReadJSONFile(genJsonPath, &data)
 	if err != nil {
 		return result, err
 	}
@@ -138,70 +140,69 @@ func parseGenFile(genJsonPath string) (parseGenFileResult, error) {
 	return result, err
 }
 
-func parseGenFiles(done <-chan bool, genJsonPaths []string) (<-chan isolate.Tree, <-chan error) {
-	trees := make(chan isolate.Tree)
-	errors := make(chan error, len(genJsonPaths))
-	var wg sync.WaitGroup
-	for _, genJsonPath := range genJsonPaths {
-		wg.Add(1)
-		go func() {
-			result := parseGenFile(genJsonPath)
-			if result.err != nil {
-				errors <- result.err
-			} else {
+func parseGenFiles(genJsonPaths []string) (<-chan isolate.Tree, <-chan error) {
+	chTrees := make(chan isolate.Tree)
+	chErrors := make(chan error, 1)
+	go func() {
+		defer close(chTrees)
+		defer close(chErrors)
+		chErrors <- parallel.FanOutIn(func(ch chan<- func() error) {
+			for _, genJsonPath := range genJsonPaths {
 				select {
-				case trees <- isolate.Tree{result.dir, *result.opts}:
-				case <-done:
+				case ch <- func() error {
+					if result, err := parseGenFile(genJsonPath); err != nil {
+						return err
+					} else {
+						select {
+						case chTrees <- isolate.Tree{result.dir, *result.opts}:
+						case <-interrupt.Channel:
+							return errors.New("interrupted")
+						}
+						return nil
+					}
+				}:
+				case <-interrupt.Channel:
+					return
 				}
 			}
-			wg.Done()
-		}()
-		select {
-		case <-done:
-			break // early termination
-		default:
-		}
-	}
-	outErrors := make(chan error, 1)
-	go func() {
-		wg.Wait()
-		close(trees)
-		select {
-		case err := <-errors:
-			outErrors <- err
-		default:
-			outErrors <- nil
-		}
+		})
 	}()
-	return trees, outErrors
+	return chTrees, chErrors
 }
 
 func (c *batchArchiveRun) main(a subcommands.Application, args []string) error {
-	done := make(chan struct{})
-	defer close(done)
-	chTrees, chGenError := parseGenFiles(done, args)
-	chIsolateHashes, chFileAssets, chIsoError := isolate.Isolate(done, chTrees)
-	chUploadError := isolate.Archive(done, chFileAssets, c.serverURL, c.namespace)
+	// Library interrupt is used for clean handling of Ctrl+C or in case of unrecoverable errors.
+	defer interrupt.Set()
+	// 3 step pipeline is connected using two channels:
+	// [Parsing Gen Files] => chTrees => [Isolate] => chFileAssets => [Archive] .
+	// The error channels are collected here.
+	chTrees, chGenErrors := parseGenFiles(args)
+	chIsolateHashes, chFileAssets, chIsoErrors := isolate.IsolateAsync(chTrees)
+	chArchiveErrors := isolate.ArchiveAsync(chFileAssets, c.serverURL, c.namespace)
 	select {
-	case cerr := <-chGenError:
+	case cerr := <-chGenErrors:
 		if cerr != nil {
 			return cerr
 		}
-	case ierr := <-chIsoError:
+	case ierr := <-chIsoErrors:
 		if ierr != nil {
 			return ierr
 		}
-	case uerr := <-chUploadError:
+	case uerr := <-chArchiveErrors:
 		if uerr != nil {
 			return uerr
 		} else {
 			// Success, no uploading error.
+			isolatedHashes := <-chIsolateHashes
+			if c.dumpJson != "" {
+				return common.WriteJSONFile(c.dumpJson, isolatedHashes)
+			}
+			return nil
 		}
+	case <-interrupt.Channel:
+		return errors.New("interrupted")
 	}
-	isolatedHashes := <-chIsolateHashes
-	if c.dumpJson != "" {
-		return common.WriteJSONFile(c.dumpJson, isolatedHashes)
-	}
+	// Unreachable code.
 	return nil
 }
 

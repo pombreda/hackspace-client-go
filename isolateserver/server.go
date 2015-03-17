@@ -183,7 +183,7 @@ func (s *Storage) Connect() error {
 	return nil
 }
 
-func (s *Storage) Upload(done <-chan struct{}, chItems <-chan UploadItem) error {
+func (s *Storage) Upload(chItems <-chan UploadItem) error {
 	// TODO
 	return nil
 }

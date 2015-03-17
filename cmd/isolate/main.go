@@ -8,6 +8,7 @@ import (
 	"log"
 	"os"
 
+	"github.com/maruel/interrupt"
 	"github.com/maruel/subcommands"
 )
 
@@ -23,6 +24,7 @@ var application = &subcommands.DefaultApplication{
 }
 
 func main() {
+	interrupt.HandleCtrlC()
 	log.SetFlags(log.Lmicroseconds)
 	os.Exit(subcommands.Run(application, nil))
 }

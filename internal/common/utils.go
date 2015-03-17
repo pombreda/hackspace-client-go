@@ -10,11 +10,13 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"path"
 	"path/filepath"
 	"runtime"
 	"strings"
 
 	"github.com/kr/pretty"
+	"github.com/maruel/interrupt"
 )
 
 // URLToHTTPS ensures the url is https://.
@@ -41,6 +43,65 @@ func IsDirectory(path string) bool {
 	return err == nil && fileInfo.IsDir()
 }
 
+// IsolatedFileToState returns a path to saved state file for an isolate file.
+func IsolatedFileToState(isolate string) string {
+	return isolate + ".state"
+}
+
+func GetNativePathCase(ipath string) (string, error) {
+	// TODO(tandrii): memoize?
+	if IsWindows() || IsMac() {
+		return "", errors.New("TODO(tandrii): mac+win")
+	} else {
+		// Other platforms => likely Linux.
+		opath := path.Clean(ipath)
+		sep := string(os.PathSeparator)
+		if strings.HasSuffix(ipath, sep) && strings.HasSuffix(opath, sep) {
+			opath = opath + sep
+		}
+		// Probably useful in Go too.
+		if opath == ipath {
+			return ipath, nil
+		} else {
+			return opath, nil
+		}
+	}
+}
+
+func findItemNativeCase(root, item string) (string, error) {
+	if IsWindows() {
+		return "", errors.New("TODO(tandrii) findItemNativeCase for win")
+	} else if IsMac() {
+		return "", errors.New("TODO(tandrii) findItemNativeCase for mac")
+	} else {
+		if item == ".." {
+			return item, nil
+		}
+		if root, err := GetNativePathCase(root); err != nil {
+			return "", err
+		} else if res, err := GetNativePathCase(path.Join(root, item)); err != nil {
+			return "", err
+		} else {
+			return path.Base(res), nil
+		}
+	}
+}
+
+func FixNativePathCase(root, inpath string) (string, error) {
+	nativeCasePath := root
+	for _, rawPart := range strings.Split(inpath, string(os.PathSeparator)) {
+		if rawPart == "" || rawPart == "." {
+			break
+		}
+		if part, err := findItemNativeCase(nativeCasePath, rawPart); err != nil {
+			return "", err
+		} else {
+			nativeCasePath = path.Join(nativeCasePath, part)
+		}
+	}
+	return nativeCasePath, nil
+}
+
 func GetFileNameWithoutExtension(path string) string {
 	fname := filepath.Base(path)
 	return strings.TrimSuffix(fname, filepath.Ext(fname))
@@ -53,8 +114,13 @@ func GetFileSize(path string) (int64, error) {
 		return stat.Size(), nil
 	}
 }
+
 func IsWindows() bool {
 	return runtime.GOOS == "windows"
+}
+
+func IsMac() bool {
+	return runtime.GOOS == "darwin"
 }
 
 // StringsCollect accumulates string values from repeated flags.
@@ -102,11 +168,11 @@ func (c *NKVArgCollect) Set(value string) error {
 	return nil
 }
 
-// SendError to error channel unless done channel is closed.
+// SendError sends error to error channel unless interrupted.
 // Use this for timeley termination of gourotines.
-func SendError(done <-chan struct{}, err error, chError chan<- error) {
+func SendError(err error, chError chan<- error) {
 	select {
 	case chError <- err:
-	case <-done:
+	case <-interrupt.Channel:
 	}
 }
