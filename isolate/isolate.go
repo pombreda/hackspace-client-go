@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/ioutil"
 	"log"
 	"os"
 	"path"
@@ -44,14 +45,16 @@ type Tree struct {
 	Opts ArchiveOptions
 }
 
+type KeyVars map[string]string
+
 // ArchiveOptions for achiving trees.
 type ArchiveOptions struct {
-	Isolate         string            `json:"isolate"`
-	Isolated        string            `json:"isolated"`
-	Blacklist       []string          `json:"blacklist"`
-	PathVariables   map[string]string `json:"path_variables"`
-	ExtraVariables  map[string]string `json:"extra_variables"`
-	ConfigVariables map[string]string `json:"config_variables"`
+	Isolate         string   `json:"isolate"`
+	Isolated        string   `json:"isolated"`
+	Blacklist       []string `json:"blacklist"`
+	PathVariables   KeyVars  `json:"path_variables"`
+	ExtraVariables  KeyVars  `json:"extra_variables"`
+	ConfigVariables KeyVars  `json:"config_variables"`
 }
 
 // NewArchiveOptions initializes with non-nil values
@@ -127,17 +130,17 @@ type SavedState struct {
 	Command []string `json:"command"`
 	// GYP variables that are used to generate conditions. The most frequent
 	// example is 'OS'.
-	ConfigVariables map[string]interface{} `json:"ConfigVariables"`
+	ConfigVariables KeyVars `json:"ConfigVariables"`
 	// GYP variables that will be replaced in 'command' and paths but will not be
 	// considered a relative directory.
-	ExtraVariables map[string]string `json:"ExtraVariables"`
+	ExtraVariables KeyVars `json:"ExtraVariables"`
 	// Cache of the files found so the next run can skip hash calculation.
 	Files map[string]FileMetadata `json:"files"`
 	// Path of the original .isolate file. Relative path to isolated_basedir.
 	IsolateFile string `json:"isolate_file"`
 	// GYP variables used to generate the .isolated files paths based on path
 	// variables. Frequent examples are DEPTH and PRODUCT_DIR.
-	PathVariables map[string]string `json:"PathVariables"`
+	PathVariables KeyVars `json:"PathVariables"`
 	// If the generated directory tree should be read-only. Defaults to 1.
 	ReadOnly bool `json:"read_only"`
 	// Relative cwd to use to start the command.
@@ -152,6 +155,13 @@ type SavedState struct {
 	isolateFilepath string
 	isolatedBasedir string
 }
+
+func (ss *SavedState) UpdateConfig(newConfigVariables KeyVars) {
+	for k, v := range newConfigVariables {
+		ss.ConfigVariables[k] = v
+	}
+}
+
 type CompleteState struct {
 	SavedState
 }
@@ -163,8 +173,28 @@ func (cs *CompleteState) InitializeDummy(cwd string) {
 }
 func (cs *CompleteState) InitIgnoreSavedState() {
 }
-func (cs *CompleteState) LoadFromIsolate(cwd, isolate string, opts ArchiveOptions) error {
-	return nil
+func (cs *CompleteState) LoadFromIsolate(cwd, isolateFile string, opts ArchiveOptions) error {
+	if !filepath.IsAbs(isolateFile) {
+		panic(fmt.Errorf("isolateFile must be absolute path."))
+	}
+	isolateFile, err := common.GetNativePathCase(isolateFile)
+	assertNoError(err)
+	// Config variables are not affected by the paths and must be used to retrieve the paths,
+	// so update them first.
+	cs.SavedState.UpdateConfig(opts.ConfigVariables)
+
+	// At that point, variables are not replaced yet in command and infiles.
+	// infiles may contain directory entries and is in posix style.
+	isolateFileData, err := ioutil.ReadFile(isolateFile)
+	if err != nil {
+		return fmt.Errorf("failed to read isolate file %s", isolateFile)
+	}
+	command, infiles, readOnly, isolateCmdDir, err := LoadIsolateForConfig(
+		filepath.Dir(isolateFile), isolateFileData, cs.SavedState.ConfigVariables)
+	if err != nil {
+		return fmt.Errorf("failed to parse isolate %s", isolateFile)
+	}
+	return errors.New("TODO(tandrii)")
 }
 func (cs *CompleteState) FilesToMetadata() error {
 	//TODO(tandrii): need sorting? For determinism?
