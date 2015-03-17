@@ -188,6 +188,11 @@ func HashFile(filepath, algo string) (string, error) {
 		return "", fmt.Errorf("failed to open %s: %s", filepath, err)
 	}
 	defer f.Close()
+	// I(tandrii) benchmarked this with various buffer sizes of this copying.
+	// Golang's Copy uses 32K, and raising this number to 1MB as it is in Python
+	// didn't help in performance single threaded. But higher numbers are more
+	// likely to suffer from multi-threaded cache polution. Lowering this number
+	// doesn't seem to make a difference either.
 	if _, err := io.Copy(h, f); err != nil {
 		return "", err
 	}

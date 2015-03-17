@@ -25,14 +25,17 @@ func benchmarkHashFile(size int64, b *testing.B) {
 	b.StopTimer()
 }
 
-func BenchmarkHashFile128(b *testing.B) {
-	benchmarkHashFile(128, b)
-}
 func BenchmarkHashFile512(b *testing.B) {
 	benchmarkHashFile(512, b)
 }
 func BenchmarkHashFile1K(b *testing.B) {
 	benchmarkHashFile(1024, b)
+}
+func BenchmarkHashFile32K(b *testing.B) {
+	benchmarkHashFile(32*1024, b)
+}
+func BenchmarkHashFile64K(b *testing.B) {
+	benchmarkHashFile(64*1024, b)
 }
 func BenchmarkHashFile512K(b *testing.B) {
 	benchmarkHashFile(512*1024, b)
