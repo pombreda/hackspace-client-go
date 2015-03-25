@@ -45,8 +45,6 @@ type Tree struct {
 	Opts ArchiveOptions
 }
 
-type KeyVars map[string]string
-
 // ArchiveOptions for achiving trees.
 type ArchiveOptions struct {
 	Isolate         string   `json:"isolate"`
@@ -194,6 +192,7 @@ func (cs *CompleteState) LoadFromIsolate(cwd, isolateFile string, opts ArchiveOp
 	if err != nil {
 		return fmt.Errorf("failed to parse isolate %s", isolateFile)
 	}
+	log.Println(command, infiles, readOnly, isolateCmdDir)
 	return errors.New("TODO(tandrii)")
 }
 func (cs *CompleteState) FilesToMetadata() error {

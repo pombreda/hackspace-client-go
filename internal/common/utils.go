@@ -18,6 +18,7 @@ import (
 	"github.com/kr/pretty"
 	"github.com/maruel/interrupt"
 )
+import . "chromium.googlesource.com/infra/swarming/client-go/internal/types"
 
 // URLToHTTPS ensures the url is https://.
 func URLToHTTPS(s string) (string, error) {
@@ -102,6 +103,11 @@ func FixNativePathCase(root, inpath string) (string, error) {
 	return nativeCasePath, nil
 }
 
+func PosixpathJoin(a ...string) string {
+	//TODO(tandrii): re-use a package for this?
+	return strings.Replace(filepath.Join(a...), string(os.PathSeparator), "/", 0)
+}
+
 func GetFileNameWithoutExtension(path string) string {
 	fname := filepath.Base(path)
 	return strings.TrimSuffix(fname, filepath.Ext(fname))
@@ -117,6 +123,10 @@ func GetFileSize(path string) (int64, error) {
 
 func IsWindows() bool {
 	return runtime.GOOS == "windows"
+}
+
+func IsWin32() bool {
+	return IsWindows() && runtime.GOARCH == "386"
 }
 
 func IsMac() bool {
@@ -142,11 +152,11 @@ func (c *StringsCollect) Set(value string) error {
 // The only supported form is --flag key=value .
 // If the same key appears several times, the value of last occurence is used.
 type NKVArgCollect struct {
-	Values  *map[string]string
+	Values  *KeyVars
 	OptName string
 }
 
-func (c *NKVArgCollect) SetAsFlag(flags *flag.FlagSet, values *map[string]string,
+func (c *NKVArgCollect) SetAsFlag(flags *flag.FlagSet, values *KeyVars,
 	name string, usage string) {
 	c.Values = values
 	c.OptName = name

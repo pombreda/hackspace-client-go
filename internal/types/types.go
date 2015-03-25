@@ -13,3 +13,4 @@
 package types
 
 type IsolateHash string
+type KeyVars map[string]string
